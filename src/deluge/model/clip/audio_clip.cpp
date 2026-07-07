@@ -1221,6 +1221,7 @@ Error AudioClip::claimOutput(ModelStackWithTimelineCounter* modelStack) {
 
 void AudioClip::loadSample(bool mayActuallyReadFile) {
 	Error error = sampleHolder.loadFile(sampleControls.isCurrentlyReversed(), false, mayActuallyReadFile);
+
 	name.set(sampleHolder.filePath.get());
 	if (error != Error::NONE) {
 		display->displayError(error);
@@ -1300,6 +1301,15 @@ void AudioClip::clear(Action* action, ModelStackWithTimelineCounter* modelStack,
 			sampleHolder.filePath.clear();
 			sampleHolder.setAudioFile(nullptr);
 			name.set("");
+
+			// Now that the clip is empty, deactivate it so a looper doesn't sit active-but-empty (which never re-arms
+			// to record, since Song::getClipWithOutputAboutToBeginLinearRecording requires the clip to be inactive). A
+			// fresh empty clip is inactive, so this matches "should be the same as an empty clip". Mirrors the
+			// undo-revert behaviour in ConsequenceAudioClipSetSample::revert. Guarded on `action` to skip the internal
+			// clear() from finishLinearRecording, which is about to set a new sample.
+			if (action && playbackHandler.playbackState && playbackHandler.recording == RecordingMode::NORMAL) {
+				activeIfNoSolo = false;
+			}
 		}
 
 		renderData.xScroll = -1;

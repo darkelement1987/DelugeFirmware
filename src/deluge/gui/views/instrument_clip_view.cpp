@@ -101,9 +101,6 @@ extern "C" {}
 
 using namespace deluge::gui;
 
-constexpr uint8_t kVelocityShortcutX = 15;
-constexpr uint8_t kVelocityShortcutY = 1;
-
 PLACE_SDRAM_DATA InstrumentClipView instrumentClipView{};
 
 InstrumentClipView::InstrumentClipView() : numEditPadPresses(0) {
@@ -1036,7 +1033,7 @@ void InstrumentClipView::modEncoderButtonAction(uint8_t whichModEncoder, bool on
 
 	// If they want to copy or paste automation...
 	if (Buttons::isButtonPressed(deluge::hid::button::LEARN)) {
-		if (on && getCurrentOutputType() != OutputType::CV) {
+		if (on) {
 			if (Buttons::isShiftButtonPressed()) {
 				pasteAutomation(whichModEncoder);
 			}
@@ -1864,7 +1861,7 @@ ActionResult InstrumentClipView::padAction(int32_t x, int32_t y, int32_t velocit
 		if (velocity && (!isUIModeActive(UI_MODE_AUDITIONING) || !editedAnyPerNoteRowStuffSinceAuditioningBegan)) {
 			// are we trying to enter the automation view velocity note editor
 			// by pressing audition pad + velocity shortcut?
-			if (isUIModeActive(UI_MODE_AUDITIONING) && (x == kVelocityShortcutX && y == kVelocityShortcutY)) {
+			if (isUIModeActive(UI_MODE_AUDITIONING) && automationView.isNoteVelocityEditorShortcut(x, y)) {
 				return commandEnterNoteVelocityEditor(x, y);
 			}
 			// otherwise let's check for another shortcut pad action
@@ -2334,6 +2331,7 @@ void InstrumentClipView::editPadAction(bool state, uint8_t yDisplay, uint8_t xDi
 
 				int32_t oldLength;
 				int32_t noteStartPos;
+				bool haveNote = false;
 
 				// If multiple notes, pick the last one
 				if (editPadPresses[i].isBlurredSquare) {
@@ -2342,68 +2340,73 @@ void InstrumentClipView::editPadAction(bool state, uint8_t yDisplay, uint8_t xDi
 					if (note) {
 						oldLength = note->getLength();
 						noteStartPos = note->pos;
+						haveNote = true;
 					}
 				}
 
 				else {
 					oldLength = editPadPresses[i].intendedLength;
 					noteStartPos = editPadPresses[i].intendedPos;
+					haveNote = true;
 				}
 
-				// First, figure out the lengh to take the note up to the start of the pressed square. Put it in
-				// newLength
-				int32_t newLength = squareStart - noteStartPos;
-				if (newLength < 0) {
-					newLength += effectiveLength; // Wrapped note
+				if (haveNote) {
+
+					// First, figure out the lengh to take the note up to the start of the pressed square. Put it in
+					// newLength
+					int32_t newLength = squareStart - noteStartPos;
+					if (newLength < 0) {
+						newLength += effectiveLength; // Wrapped note
+					}
+
+					// If current square wasn't occupied at all to begin with, fill it up
+					if (oldLength <= newLength) {
+						newLength += squareWidth;
+					}
+
+					if (newLength == 0) {
+						newLength = squareWidth; // Protection - otherwise we could end up with a 0-length note!
+					}
+
+					Action* action = actionLogger.getNewAction(ActionType::NOTE_EDIT, ActionAddition::ALLOWED);
+
+					int32_t areaStart, areaWidth;
+					bool actuallyExtendNoteAtStartOfArea = (newLength > oldLength);
+
+					if (actuallyExtendNoteAtStartOfArea) { // Increasing length
+
+						// Make sure it doesn't eat into the next note
+						int32_t maxLength = noteRow->getDistanceToNextNote(noteStartPos, modelStackWithNoteRow);
+						newLength = std::min(newLength, maxLength);
+
+						areaStart = noteStartPos;
+						areaWidth = newLength;
+					}
+
+					else { // Decreasing length
+						areaStart = noteStartPos + newLength;
+						areaWidth = oldLength - newLength;
+					}
+
+					noteRow->clearArea(areaStart, areaWidth, modelStackWithNoteRow, action, clip->getWrapEditLevel(),
+					                   actuallyExtendNoteAtStartOfArea);
+
+					if (!editPadPresses[i].isBlurredSquare) {
+						editPadPresses[i].intendedLength = newLength;
+					}
+					editPadPresses[i].deleteOnDepress = false;
+					if (rootUI == this) {
+						uiNeedsRendering(this, 1 << yDisplay, 0);
+					}
+
+					if (instrument->type == OutputType::KIT) {
+						setSelectedDrum(noteRow->drum);
+					}
+
+					noteRow->getRowSquareInfo(effectiveLength, gridSquareInfo[yDisplay]);
+					lastSelectedNoteXDisplay = xDisplay;
+					lastSelectedNoteYDisplay = yDisplay;
 				}
-
-				// If current square wasn't occupied at all to begin with, fill it up
-				if (oldLength <= newLength) {
-					newLength += squareWidth;
-				}
-
-				if (newLength == 0) {
-					newLength = squareWidth; // Protection - otherwise we could end up with a 0-length note!
-				}
-
-				Action* action = actionLogger.getNewAction(ActionType::NOTE_EDIT, ActionAddition::ALLOWED);
-
-				int32_t areaStart, areaWidth;
-				bool actuallyExtendNoteAtStartOfArea = (newLength > oldLength);
-
-				if (actuallyExtendNoteAtStartOfArea) { // Increasing length
-
-					// Make sure it doesn't eat into the next note
-					int32_t maxLength = noteRow->getDistanceToNextNote(noteStartPos, modelStackWithNoteRow);
-					newLength = std::min(newLength, maxLength);
-
-					areaStart = noteStartPos;
-					areaWidth = newLength;
-				}
-
-				else { // Decreasing length
-					areaStart = noteStartPos + newLength;
-					areaWidth = oldLength - newLength;
-				}
-
-				noteRow->clearArea(areaStart, areaWidth, modelStackWithNoteRow, action, clip->getWrapEditLevel(),
-				                   actuallyExtendNoteAtStartOfArea);
-
-				if (!editPadPresses[i].isBlurredSquare) {
-					editPadPresses[i].intendedLength = newLength;
-				}
-				editPadPresses[i].deleteOnDepress = false;
-				if (rootUI == this) {
-					uiNeedsRendering(this, 1 << yDisplay, 0);
-				}
-
-				if (instrument->type == OutputType::KIT) {
-					setSelectedDrum(noteRow->drum);
-				}
-
-				noteRow->getRowSquareInfo(effectiveLength, gridSquareInfo[yDisplay]);
-				lastSelectedNoteXDisplay = xDisplay;
-				lastSelectedNoteYDisplay = yDisplay;
 			}
 		}
 
@@ -2981,7 +2984,7 @@ void InstrumentClipView::adjustNoteParameterValue(int32_t withOffset, int32_t wi
 					goto multiplePresses;
 				}
 
-				int32_t originalParameter;
+				int32_t originalParameter = 0;
 				bool parameterHasBeenEdited = false;
 
 				if (withOffset != 0) {
@@ -3146,6 +3149,11 @@ void InstrumentClipView::adjustNoteParameterValue(int32_t withOffset, int32_t wi
 
 					noteRow->changeNotesAcrossAllScreens(editPadPresses[i].intendedPos, modelStackWithNoteRow, action,
 					                                     changeType, parameterValue);
+
+					// if we're in the note editor, refresh grid to show edited note
+					if (getCurrentUI() == &soundEditor && soundEditor.inNoteEditor()) {
+						uiNeedsRendering(this, 1 << editPadPresses[i].yDisplay, 0);
+					}
 				}
 				else {
 					// In the case the operation didn't change anything, we need to transform Iterance back from preset
@@ -3206,7 +3214,7 @@ multiplePresses:
 			}
 		}
 
-		int32_t originalParameter;
+		int32_t originalParameter = 0;
 		bool parameterHasBeenEdited = false;
 
 		// decide the parameter value, based on the existing parameter value of the leftmost note
@@ -3507,6 +3515,8 @@ bool InstrumentClipView::enterNoteEditor() {
 			}
 			openUI(&soundEditor);
 			blinkSelectedNote();
+			// refresh grid to potentially highlight already edited notes
+			uiNeedsRendering(this, 0xFFFFFFFF, 0);
 			return true;
 		}
 	}
@@ -3526,6 +3536,8 @@ void InstrumentClipView::exitNoteEditor() {
 		lastSelectedNoteYDisplay = kNoSelection;
 	}
 	resetSelectedNoteBlinking();
+	// refresh grid to potentially unhighlight edited notes
+	uiNeedsRendering(this, 0xFFFFFFFF, 0);
 }
 
 void InstrumentClipView::handleNoteEditorEditPadAction(int32_t x, int32_t y, int32_t on) {
@@ -5317,23 +5329,27 @@ bool InstrumentClipView::startAuditioningRow(int32_t velocity, int32_t yDisplay,
 		}
 	}
 
-	// If won't be actually sounding Instrument...
-	if (shiftButtonDown || Buttons::isButtonPressed(deluge::hid::button::Y_ENC)) {
+	// if we aren't auditioning silently due to sequenced notes, check if we should be auditioning silently
+	// because of shortcut presses (shift or euclidean)
+	if (!doSilentAudition) {
+		// If won't be actually sounding Instrument...
+		if (shiftButtonDown || Buttons::isButtonPressed(deluge::hid::button::Y_ENC)) {
+			fileBrowserShouldNotPreview = true;
 
-		fileBrowserShouldNotPreview = true;
+			doSilentAudition = true;
+		}
+		else {
+			if (!auditioningSilently) {
+				fileBrowserShouldNotPreview = false;
 
-		doSilentAudition = true;
-	}
-	else {
-		if (!auditioningSilently) {
-			fileBrowserShouldNotPreview = false;
+				sendAuditionNote(true, yDisplay, velocityToSound, 0);
 
-			sendAuditionNote(true, yDisplay, velocityToSound, 0);
-
-			lastAuditionedVelocityOnScreen[yDisplay] = velocityToSound;
+				lastAuditionedVelocityOnScreen[yDisplay] = velocityToSound;
+			}
 		}
 	}
 
+	// if we are auditioning silently
 	if (doSilentAudition) {
 		auditioningSilently = true;
 		reassessAllAuditionStatus();
@@ -5398,13 +5414,16 @@ void InstrumentClipView::potentiallyRefreshNoteRowMenu() {
 void InstrumentClipView::finishAuditioningRow(int32_t yDisplay, ModelStackWithNoteRow* modelStack,
                                               NoteRow* noteRowOnActiveClip) {
 	if (auditionPadIsPressed[yDisplay]) {
+		bool auditionNoteWasSounding = lastAuditionedVelocityOnScreen[yDisplay] != 255;
 		auditionPadIsPressed[yDisplay] = 0;
 		lastAuditionedVelocityOnScreen[yDisplay] = 255;
 
-		// Stop the note sounding - but only if a sequenced note isn't in fact being played here.
+		// Stop the note sounding - but only if we previously auditioned the note
+		// and only if a sequenced note isn't in fact being played here.
 		// Or if it's drone note, end auditioning to transfer the note's sustain to the sequencer
-		if (!noteRowOnActiveClip || !noteRowOnActiveClip->sequenced
-		    || noteRowOnActiveClip->isDroning(modelStack->getLoopLength())) {
+		if (auditionNoteWasSounding
+		    && (!noteRowOnActiveClip || !noteRowOnActiveClip->sequenced
+		        || noteRowOnActiveClip->isDroning(modelStack->getLoopLength()))) {
 			sendAuditionNote(false, yDisplay, 64, 0);
 		}
 	}
@@ -6219,7 +6238,8 @@ void InstrumentClipView::commandTransposeScreen(int32_t offset, bool inOctave) {
 
 		if (noteRow && !noteRow->hasNoNotes()) {
 			int32_t currentYNote = noteRow->y;
-			auto destYNote = currentSong->incrementYNoteInKey(currentYNote, offset, inOctave);
+			// what if it's not in key?
+			auto destYNote = currentSong->incrementYNoteInKey(currentYNote, offset, inOctave, clip->inScaleMode);
 			D_PRINTLN("Moving note from row %i to %i", currentYNote, destYNote);
 
 			// Skip if note would stay in same row
